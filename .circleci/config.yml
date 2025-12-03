@@ -1,0 +1,72 @@
+version: 2.1
+
+orbs:
+  docker: circleci/docker@2.1.0
+
+jobs:
+  build_and_push:
+    docker:
+      - image: cimg/node:18
+    steps:
+      - checkout
+
+      - setup_remote_docker:
+          version: 20.10.7
+
+      - run:
+          name: Build Docker Images
+          command: |
+            echo "Building backend image"
+            docker build -t $DOCKERHUB_USERNAME/cloudshop-backend:$CIRCLE_SHA1 backend/
+            echo "Building frontend image"
+            docker build -t $DOCKERHUB_USERNAME/cloudshop-frontend:$CIRCLE_SHA1 frontend/
+
+      - run:
+          name: Login to Docker Hub
+          command: |
+            echo $DOCKERHUB_PASSWORD | docker login -u $DOCKERHUB_USERNAME --password-stdin
+
+      - run:
+          name: Push Backend & Frontend Images
+          command: |
+            docker push $DOCKERHUB_USERNAME/cloudshop-backend:$CIRCLE_SHA1
+            docker push $DOCKERHUB_USERNAME/cloudshop-frontend:$CIRCLE_SHA1
+
+  deploy_to_ec2:
+    machine: true
+    steps:
+      - add_ssh_keys:
+          fingerprints:
+            - "<<ADD_YOUR_FINGERPRINT_HERE>>"
+
+      - run:
+          name: Deploy to EC2 server
+          command: |
+            ssh -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST "
+              echo 'Pulling latest Docker images...' &&
+              sudo docker pull $DOCKERHUB_USERNAME/cloudshop-backend:$CIRCLE_SHA1 &&
+              sudo docker pull $DOCKERHUB_USERNAME/cloudshop-frontend:$CIRCLE_SHA1 &&
+
+              echo 'Stopping existing containers...' &&
+              sudo docker stop backend || true &&
+              sudo docker rm backend || true &&
+              sudo docker stop frontend || true &&
+              sudo docker rm frontend || true &&
+
+              echo 'Starting backend container...' &&
+              sudo docker run -d --name backend -p 4000:4000 $DOCKERHUB_USERNAME/cloudshop-backend:$CIRCLE_SHA1 &&
+
+              echo 'Starting frontend container...' &&
+              sudo docker run -d --name frontend -p 80:80 $DOCKERHUB_USERNAME/cloudshop-frontend:$CIRCLE_SHA1
+            "
+
+workflows:
+  cloudshop_pipeline:
+    jobs:
+      - build_and_push
+      - deploy_to_ec2:
+          requires:
+            - build_and_push
+          filters:
+            branches:
+              only: main
